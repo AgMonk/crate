@@ -10,6 +10,8 @@ import {
   pickCandidates, getUrl, sanitizeFilename, artistMatches, setSiteInterval,
 } from '../lib/flac.mjs'
 import { createEngine, DEFAULT_RPC } from '../lib/engine.mjs'
+import { audioOffsetOf } from '../lib/tags.mjs'
+import { autoTag, autoTagFile } from './tag.mjs'
 import { ROOT } from '../lib/api.mjs'
 import {
   table, fmtSize, fmtDuration, ok, info, warn, fail, bold, dim, cyan, green, red, progress,
@@ -274,6 +276,8 @@ async function downloadAlbum({ artist, album, code = '', root, artistRoot = '', 
   }
   if (!pending.length) {
     ok('没有需要下载的曲目')
+    // 曲目齐全但可能缺标签（历史目录或上次中断），这里仍然补一遍
+    await autoTag(albumDir, flags)
     if (flags.verify) await cmdVerify(albumDir, flags)
     return summary
   }
@@ -357,6 +361,9 @@ async function downloadAlbum({ artist, album, code = '', root, artistRoot = '', 
   }
   fs.writeFileSync(path.join(albumDir, MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
 
+  // 下完即写标签：清单已落盘，标签模块直接以清单 + 专辑接口为准
+  if (!flags.dry) await autoTag(albumDir, flags)
+
   if (flags.verify) await cmdVerify(albumDir, flags)
   return summary
 }
@@ -403,6 +410,8 @@ export async function cmdAlbumList(file, flags) {
           platform: alb.platform || flags.platform,
           alts: (alb.alts || []).join(','),
           probe: alb.probe || flags.probe,
+          date: alb.date || flags.date,
+          composer: alb.composer || flags.composer,
         },
       })
       summary.push(res)
@@ -496,7 +505,16 @@ export async function cmdTrack(title, flags) {
 
   const result = await engine.finish({ onProgress: makeReporter() })
   for (const f of result.failed) fail(`下载失败 ${f.out}：${f.error}`)
-  if (result.completed.length) ok(`完成 ${cyan(path.join(dir, out))}`)
+  if (result.completed.length) {
+    ok(`完成 ${cyan(path.join(dir, out))}`)
+    await autoTagFile(path.join(dir, out), {
+      title: chosen.name,
+      artist: chosen.artist,
+      album: chosen.album_name,
+      coverUrl: chosen.pic_url,
+      coverKey: chosen.album_id || 'single',
+    }, flags)
+  }
   return { queued: result.completed.length, failed: result.failed }
 }
 
@@ -591,9 +609,19 @@ export async function cmdVerify(dir, flags = {}) {
     const exp = expectedDuration(manifest, base)
     if (exp && dur && Math.abs(dur - exp) > 8) issues.push(`时长差 ${Math.round(dur - exp)}s`)
 
+    // 码率只对音频帧成立：写标签后文件含封面等元数据区，不能拿总字节反推
+    let audioBytes = size
+    if (ext === '.flac') {
+      try {
+        audioBytes = size - audioOffsetOf(file)
+      } catch {
+        // 解析失败交给上面的容器检查报错
+      }
+    }
+
     const br = Number(meta?.format?.bitrate || 0)
     if (dur && br) {
-      const calc = (size * 8) / dur
+      const calc = (audioBytes * 8) / dur
       const diff = Math.abs(calc - br) / br
       if (diff > 0.08) issues.push(`码率不符 ${(diff * 100).toFixed(0)}%`)
     }

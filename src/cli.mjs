@@ -8,7 +8,7 @@ import { bold, dim, cyan, green, red, warn, info, ok, fail } from './lib/ui.mjs'
 
 const BOOL_FLAGS = new Set([
   'apply', 'recursive', 'help', 'json', 'keep-order', 'not-in-playlist', 'repair',
-  'dry', 'force', 'verify', 'deep', 'no-wait', 'all',
+  'dry', 'force', 'verify', 'deep', 'no-wait', 'all', 'no-cover', 'no-fetch', 'no-tag',
 ])
 
 function parseArgs(argv) {
@@ -59,8 +59,11 @@ ${bold('下载')} ${dim('· flac.music.hi.cn，Aria2 可选')}
   dl album <专辑名> --artist <歌手> [--id 专辑ID] [--platform] [--code 01]
       [--root 根目录] [--dir 专辑目录] [--tracks 1,3-5] [--quality flac|mp3]
       [--engine auto|aria2|native] [--dry] [--force] [--verify]
+      [--date 2003] [--composer 作曲] [--no-tag]   下载完自动补写标签与封面
   dl album --list albums.json [--only 01,02]     批量专辑模式
   dl track <曲名> --artist <歌手> [--code OP01] [--credit 信用名] [--dry]
+  dl tag <目录...> [--date 2003] [--genre 流派] [--composer 作曲] [--no-cover] [--dry]
+                                      按清单补写标签与内嵌封面（不改动音频）
   dl verify <目录>                    校验时长/码率/FLAC 容器，识别拼接与 TV-size
 
 ${bold('云盘')}
@@ -134,10 +137,14 @@ async function main() {
         case 'track':
         case 'song':
           return await dl.cmdTrack(rest.join(' '), flags)
+        case 'tag': {
+          const tag = await import('./cmd/tag.mjs')
+          return await tag.cmdTag(rest, flags)
+        }
         case 'verify':
           return await dl.cmdVerify(rest[0] || flags.dir, flags)
         default:
-          throw new Error(`未知下载子命令: ${action}（可用: find/albums/album/track/verify）`)
+          throw new Error(`未知下载子命令: ${action}（可用: find/albums/album/track/tag/verify）`)
       }
     }
 

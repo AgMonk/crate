@@ -54,6 +54,7 @@
 - 从第三方无损聚合站（flac.music.hi.cn）整张专辑 / 单曲批量拉取，FLAC 优先
 - **Aria2 可选**：探测到 JSON-RPC 就用它提交，探不到自动降级到内置 HTTP 下载器——不必为了用这个工具先装 Aria2
 - 专辑一次解析全部曲目（站点专辑接口直接给出曲目与一次性签名），文件名 `<轨号> - <曲名>.flac`
+- **下完即写标签**：曲名 / 艺人 / 专辑 / 音轨号 / 年份 / 作曲 + 内嵌封面，只重排元数据块，音频字节不动
 - 下载后校验时长与码率，能识别 TV-size、拼接残缺、非 FLAC 容器
 
 **通用**
@@ -174,7 +175,18 @@ node src/cli.mjs cloud report [--out 报告.md]             # 生成归属报告
 ### 下载
 
 > 走第三方聚合站 `flac.music.hi.cn`，**与网易云登录态无关**，`login` 不是前置条件。
-> 站点只认 `Referer`，工具已内置；请求按 IP 限流，`--interval` 可调。
+> 站点只认 `Referer`，工具已内置。下载完成后会自动按清单补写标签与封面，`--no-tag` 可关闭。
+
+**限流口径**：站点在 `/api/getSongUrl`（取直链）维度按 IP 做配额限制，超额时有两种表现，**后一种不是「歌不存在」**：
+
+| 站点返回 | 含义 | 处理 |
+| --- | --- | --- |
+| `IP x.x.x.x 在 /api/getSongUrl 维度请求过于频繁，请在 N 秒后重试` | 明确限流，需冷却 N 秒 | 工具按提示自动等待后重试 |
+| `Song not found or invalid response` | 多数情况是同一限流的泛化响应 | 放慢 `--interval` 后重跑，不必换专辑 |
+
+`--interval` 同时作用于站内搜索与取链。实测**取链 7000ms 稳定**（约 8.5 req/min）；1000ms 与 2000ms 会持续撞限流，逐首重试耗尽后表现为「取链失败」。另外 `dl albums` 会连续扫多平台多页，扫描完立刻取链基本必失败，先等冷却或直接调大间隔。
+
+> 签名（`time`/`sign`）与限流无关：同一份专辑签名跨曲目复用有效（实测 40 秒后仍能正常取链），无需每首重新拉专辑。
 
 ```bash
 node src/cli.mjs dl find "Shape of My Heart" [--platform wyy|kuwo|both] [--limit 20]
@@ -183,11 +195,15 @@ node src/cli.mjs dl albums "Backstreet Boys" [--all] [--min-tracks 2]
 node src/cli.mjs dl album "<专辑名>" --artist "<歌手>" \
     [--id 专辑ID] [--platform wyy|kuwo] [--code 01] [--probe "专辑内任意一首歌名"] \
     [--root 库根目录] [--dir 专辑目录] [--tracks 1,3-5] [--quality flac|mp3] \
-    [--engine auto|aria2|native] [--dry] [--force] [--verify] [--no-wait]
+    [--engine auto|aria2|native] [--dry] [--force] [--verify] [--no-wait] \
+    [--date 2003] [--composer 作曲] [--no-tag]
 
 node src/cli.mjs dl album --list albums.json [--only 01,02]     # 批量专辑模式
 
 node src/cli.mjs dl track "<曲名>" --artist "<歌手>" [--code OP01] [--credit 信用名] [--dry]
+
+node src/cli.mjs dl tag "<目录...>" [--date 2003] [--genre 流派] [--composer 作曲] \
+    [--no-cover] [--no-fetch] [--dry] [--force]
 
 node src/cli.mjs dl verify "<目录>"        # 校验时长/码率/FLAC 容器
 ```
@@ -204,6 +220,18 @@ node src/cli.mjs dl verify "<目录>"        # 校验时长/码率/FLAC 容器
 | `--verify` | 下载完立刻跑一遍校验 |
 | `--no-wait` | 只提交给 Aria2 就返回（Aria2 后台继续下） |
 | `--force` | 覆盖同轨号已存在的文件 |
+| `--date` | 写入标签的年份；`dl tag` 同样适用 |
+| `--composer` | 写入标签的作曲（原声类专辑建议填） |
+| `--no-tag` | 只下载，不自动补写标签与封面 |
+
+`dl tag` 用于**事后**补写标签（下载流程已默认执行）：补 `--date` / `--composer`、修复被改过的文件，或在 `--no-tag` 下载后统一处理。元数据取自 `.crate-manifest.json` 与站点专辑接口，不需要另建清单：
+
+- 写入 `TITLE` / `ARTIST` / `ALBUM` / `ALBUMARTIST` / `TRACKNUMBER` / `TRACKTOTAL` / `DISCNUMBER` / `DISCTOTAL` / `DATE` / `GENRE` / `COMPOSER`，并内嵌封面（600×600）
+- 只重排 FLAC 元数据块，**音频帧字节原样保留**（STREAMINFO 里的 MD5 不变），不重编码
+- 按目标状态比对，已是目标值的文件跳过；只补缺失或不同的字段，`--force` 全量重写。因此「先 `--no-tag` 下载、再 `dl tag --date`」也能正确补上年份
+- `--no-cover` 不嵌封面；`--no-fetch` 只用清单信息（此时取不到封面地址与逐轨艺人）
+- 封面格式按**魔数**识别：站点封面接口标称 `image/jpg`，实际返回的是 PNG
+- 目标文件被其他进程占用（Windows `EBUSY`）时，改名会失败，工具退回原地重写而不是中断整批
 
 默认落盘根目录 `./downloads`，可用 `--root`、`CRATE_DL_ROOT` 或 `config/download.json` 覆盖：
 
@@ -458,6 +486,10 @@ E:\Music\flac\
 **Q：提示触发风控（`-460`）？**
 
 降低频率：`--interval 1500`，并隔一段时间再试。工具在命中该状态码时会立即中止，不会继续堆请求。
+
+**Q：`dl` 报 `Song not found or invalid response`，是这首歌没有资源吗？**
+
+多数不是。取链接口把 IP 限流泛化成了这句，与「曲目不存在」共用同一个返回。先放慢到 `--interval 7000` 重跑；仍失败再换 `--platform`。真正的「无资源」在 `dl album` 的曲目表里就体现为「无可用音质」，而不是取链报错。
 
 **Q：加进歌单的顺序是反的？**
 
