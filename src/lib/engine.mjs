@@ -86,6 +86,25 @@ export class Aria2Engine {
     return gid
   }
 
+  /**
+   * 清掉本次任务的「已完成/失败」记录。
+   * 只按本次提交的 gid 逐条移除，不用 purgeDownloadResult——那是清空全部停止项，
+   * 会把用户自己在下的其他任务记录一起抹掉。
+   */
+  async cleanup() {
+    const gids = this.submitted.map((q) => q.gid).filter(Boolean)
+    let removed = 0
+    for (const gid of gids) {
+      try {
+        await this.call('aria2.removeDownloadResult', [gid], { timeout: 5000 })
+        removed++
+      } catch {
+        // 记录已被 --max-download-result 挤掉或用户手动清过，忽略
+      }
+    }
+    return removed
+  }
+
   /** 轮询到全部任务落到终态；单次 multicall 拿全部 gid，避免 N 倍 RPC */
   async finish({ onProgress, pollMs = 900, deadlineMs = 60 * 60 * 1000 } = {}) {
     const all = this.submitted
@@ -153,6 +172,10 @@ export class Aria2Engine {
       else if (s?.status === 'error' || s?.status === 'removed') failed.push({ ...q, error: s.errorMessage || s.status })
       else failed.push({ ...q, error: '未确认完成（RPC 查不到该任务，磁盘上也没有完整文件）' })
     }
+
+    // 终态已落定，顺手清掉 Aria2 的完成记录，任务列表不留残渣
+    await this.cleanup()
+
     return { kind: this.kind, submitted: all, completed, failed }
   }
 }
@@ -222,6 +245,11 @@ export class NativeEngine {
     this.onProgress = onProgress
     if (this.running || this.queue.length) await new Promise((r) => this.idleWaiters.push(r))
     return { kind: this.kind, submitted: this.submitted, completed: this.completed, failed: this.failed }
+  }
+
+  /** 内置下载器没有外部任务队列，接口对称留空 */
+  async cleanup() {
+    return 0
   }
 
   async #one(task) {

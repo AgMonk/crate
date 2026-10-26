@@ -212,7 +212,7 @@ node src/cli.mjs dl verify "<目录>"        # 校验时长/码率/FLAC 容器
 | --- | --- |
 | `--root` | 库根目录，实际落盘 `<root>/<歌手>/<NN - 专辑名>/` |
 | `--dir` | 直接指定专辑目录，不再拼歌手与编号 |
-| `--engine` | `auto`（默认）/ `aria2` / `native`。`auto` 探不到 RPC 就降级内置下载器 |
+| `--engine` | `auto`（默认）/ `aria2` / `native`。`auto` 探不到 RPC 就降级内置下载器；用 Aria2 时任务结束会按 gid 移出任务列表，不留「已完成」记录，也不影响你自己排队的其他任务 |
 | `--rpc` `--secret` | Aria2 RPC 地址与 `rpc-secret`，也可用 `ARIA2_RPC` / `ARIA2_SECRET` |
 | `--code` | 专辑序号前缀，`--code 01` → `01 - Backstreet Boys/` |
 | `--probe` | 用专辑内任意一首歌名辅助定位，**同名首专/同名精选必备** |
