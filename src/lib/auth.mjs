@@ -13,6 +13,32 @@ import { info, ok, warn, fail, dim, cyan } from './ui.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+/** Set-Cookie 的属性名，不属于 cookie 本身，拼进请求头会污染整个 Cookie 字段 */
+const COOKIE_ATTR = new Set([
+  'max-age', 'expires', 'path', 'domain', 'httponly', 'secure', 'samesite', 'priority', 'version', 'comment',
+])
+
+/**
+ * 归一化登录返回的 cookie。
+ * 该接口的 `cookie` 可能是「完整 Set-Cookie 字符串」数组（`MUSIC_U=xxx; Path=/; Max-Age=...`），
+ * 直接 join 会把 Path/Expires 等属性当成 cookie 键值发出去；此处只保留 name=value。
+ */
+function normalizeCookie(raw) {
+  const pieces = Array.isArray(raw) ? raw : String(raw ?? '').split(';')
+  const pairs = new Map()
+  for (const item of pieces) {
+    const head = String(item).split(';')[0].trim() // 丢弃单条内的 Path/Expires 等后缀
+    const eq = head.indexOf('=')
+    if (eq < 1) continue
+    const name = head.slice(0, eq).trim()
+    const value = head.slice(eq + 1).trim()
+    if (!name || COOKIE_ATTR.has(name.toLowerCase())) continue
+    if (!value) continue // Max-Age=0 的清除指令，值为空，写入反而覆盖有效值
+    pairs.set(name, value)
+  }
+  return [...pairs].map(([k, v]) => `${k}=${v}`).join('; ')
+}
+
 const QR_STATE = {
   800: '二维码已过期',
   801: '等待扫码',
@@ -20,13 +46,15 @@ const QR_STATE = {
   803: '授权成功',
 }
 
-/** 校验当前 cookie 是否有效，返回用户档案 */
+/** 校验当前 cookie 是否有效，返回用户档案；匿名态 code 仍为 200 但 profile 为空，须按 uid 判定 */
 export async function fetchProfile() {
   const body = await call('user_account', {}, { retry: 0 })
   if (body?.code !== 200) return null
   const profile = body.profile || {}
+  const uid = profile.userId || body.account?.id || 0
+  if (!uid) return null
   return {
-    uid: profile.userId || body.account?.id || 0,
+    uid,
     nickname: profile.nickname || '',
     vipType: profile.vipType ?? 0,
   }
@@ -87,7 +115,7 @@ export async function qrLogin(opts = {}) {
       }
 
       if (code === 803) {
-        const cookie = typeof res.cookie === 'string' ? res.cookie : (res.cookie || []).join(';')
+        const cookie = normalizeCookie(res.cookie)
         if (!cookie || !cookie.includes('MUSIC_U')) {
           throw new Error('登录返回的 cookie 不含 MUSIC_U，可能被风控拦截')
         }
@@ -121,8 +149,10 @@ export async function qrLogin(opts = {}) {
 async function fetchProfileWith(cookie) {
   const body = await call('user_account', { cookie }, { retry: 1 })
   if (body?.code !== 200) return null
+  const uid = body.profile?.userId || body.account?.id || 0
+  if (!uid) return null
   return {
-    uid: body.profile?.userId || body.account?.id || 0,
+    uid,
     nickname: body.profile?.nickname || '',
     vipType: body.profile?.vipType ?? 0,
   }

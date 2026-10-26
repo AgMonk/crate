@@ -9,3 +9,10 @@ data/export/
 .probe.mjs
 data/
 downloads/
+
+# 智能体本地工作记录（每日日志与项目备忘，不属于项目源码）
+.workbuddy/
+
+# 操作系统杂项
+.DS_Store
+Thumbs.db
