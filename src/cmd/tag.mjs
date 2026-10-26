@@ -145,6 +145,8 @@ async function tagAlbum(dir, flags = {}) {
   let albumArtist = manifest.artist || ''
   let coverUrl = ''
   let trackArtists = new Map()
+  // 专辑总轨数：优先清单里记录的总数，其次用专辑接口的完整曲目数
+  let total = Number(manifest.totalTracks) || (manifest.tracks || []).length
 
   if (!flags['no-fetch'] && manifest.albumId) {
     try {
@@ -153,6 +155,7 @@ async function tagAlbum(dir, flags = {}) {
       albumArtist = data.info?.artist || albumArtist
       coverUrl = data.info?.pic_url || ''
       for (const [i, t] of (data.list || []).entries()) trackArtists.set(i + 1, t.artist || '')
+      if (data.list?.length) total = data.list.length
     } catch (err) {
       warn(`专辑接口不可用，退回清单信息：${err.message}`)
     }
@@ -167,7 +170,6 @@ async function tagAlbum(dir, flags = {}) {
     }
   }
 
-  const total = (manifest.tracks || []).length
   const genre = pick(flags.genre) || 'Soundtrack'
   const date = pick(flags.date)
   const composer = pick(flags.composer)

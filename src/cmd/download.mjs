@@ -352,6 +352,8 @@ async function downloadAlbum({ artist, album, code = '', root, artistRoot = '', 
     albumId: String(target.id),
     code,
     generatedAt: new Date().toISOString(),
+    // 专辑总轨数：--tracks 只下部分曲目时，标签的 TRACKTOTAL 仍应取整张专辑
+    totalTracks: tracks.length,
     tracks: plan.map((p) => ({
       index: p.idx,
       name: p.track.name,
