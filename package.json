@@ -1,0 +1,33 @@
+{
+  "name": "ncm-crate",
+  "version": "0.1.0",
+  "description": "唱片箱 crate —— 网易云音乐歌单与云盘批量管理 CLI：整理歌单、导入导出、云盘批量上传与完整性校验、按目录顺序归档成歌单",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "help": "node src/cli.mjs help"
+  },
+  "keywords": [
+    "netease",
+    "netease-cloud-music",
+    "playlist",
+    "cloud-disk",
+    "cli"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "^4.41.1",
+    "music-metadata": "^12.3.2",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "ncm": "src/cli.mjs",
+    "crate": "src/cli.mjs"
+  }
+}

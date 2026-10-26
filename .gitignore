@@ -1,0 +1,10 @@
+node_modules/
+config/auth.json
+data/login-qr.png
+data/snapshot/
+data/export/
+.env
+
+# 本地调试脚本与运行产物
+.probe.mjs
+data/
