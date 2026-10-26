@@ -6,7 +6,10 @@ import * as pl from './cmd/playlist.mjs'
 import * as cloud from './cmd/cloud.mjs'
 import { bold, dim, cyan, green, red, warn, info, ok, fail } from './lib/ui.mjs'
 
-const BOOL_FLAGS = new Set(['apply', 'recursive', 'help', 'json', 'keep-order', 'not-in-playlist', 'repair'])
+const BOOL_FLAGS = new Set([
+  'apply', 'recursive', 'help', 'json', 'keep-order', 'not-in-playlist', 'repair',
+  'dry', 'force', 'verify', 'deep', 'no-wait', 'all',
+])
 
 function parseArgs(argv) {
   const positional = []
@@ -49,6 +52,16 @@ ${bold('歌单')}
   pl merge <源歌单...> --into <目标|new:新名称> [--apply]
   pl create <名称> [--apply]
   pl delete <歌单> [--apply]       删除自建歌单（仅限自己创建的）
+
+${bold('下载')} ${dim('· flac.music.hi.cn，Aria2 可选')}
+  dl find <关键词> [--platform wyy|kuwo|both] [--limit n]
+  dl albums <歌手> [--all] [--min-tracks 2]  列出站点可检索到的专辑（专辑ID/命中曲目）
+  dl album <专辑名> --artist <歌手> [--id 专辑ID] [--platform] [--code 01]
+      [--root 根目录] [--dir 专辑目录] [--tracks 1,3-5] [--quality flac|mp3]
+      [--engine auto|aria2|native] [--dry] [--force] [--verify]
+  dl album --list albums.json [--only 01,02]     批量专辑模式
+  dl track <曲名> --artist <歌手> [--code OP01] [--credit 信用名] [--dry]
+  dl verify <目录>                    校验时长/码率/FLAC 容器，识别拼接与 TV-size
 
 ${bold('云盘')}
   cloud list [--limit n] [--match matched|unmatched] [--export out.csv]
@@ -100,6 +113,32 @@ async function main() {
       if (!p) return fail('登录态已失效，请重新 login')
       ok(`已登录: ${bold(p.nickname)}  uid=${p.uid}  登录时间 ${auth.loginAt || '-'}`)
       return
+    }
+
+    // ---------- 下载（走第三方站点，不依赖网易云登录态） ----------
+    if (group === 'dl' || group === 'download') {
+      // 懒加载：music-metadata 体积不小，不该拖慢 pl/cloud 的启动
+      const dl = await import('./cmd/download.mjs')
+      switch (action) {
+        case 'find':
+        case 'search':
+          return await dl.cmdFind(rest.join(' '), flags)
+        case 'albums':
+          return await dl.cmdAlbums(rest.join(' '), flags)
+        case 'album':
+          if (flags.list !== undefined) {
+            if (typeof flags.list !== 'string') throw new Error('--list 需要 albums.json 路径')
+            return await dl.cmdAlbumList(flags.list, flags)
+          }
+          return await dl.cmdAlbum(rest.join(' '), flags)
+        case 'track':
+        case 'song':
+          return await dl.cmdTrack(rest.join(' '), flags)
+        case 'verify':
+          return await dl.cmdVerify(rest[0] || flags.dir, flags)
+        default:
+          throw new Error(`未知下载子命令: ${action}（可用: find/albums/album/track/verify）`)
+      }
     }
 
     // 其余命令统一要求登录

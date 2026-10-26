@@ -49,6 +49,13 @@
 - 云盘歌曲纠错（把自动匹配错的曲目指回正确版本）
 - 云盘 → 歌单：按目录文件顺序批量写入，多级目录保持层级顺序
 
+**下载**
+
+- 从第三方无损聚合站（flac.music.hi.cn）整张专辑 / 单曲批量拉取，FLAC 优先
+- **Aria2 可选**：探测到 JSON-RPC 就用它提交，探不到自动降级到内置 HTTP 下载器——不必为了用这个工具先装 Aria2
+- 专辑一次解析全部曲目（站点专辑接口直接给出曲目与一次性签名），文件名 `<轨号> - <曲名>.flac`
+- 下载后校验时长与码率，能识别 TV-size、拼接残缺、非 FLAC 容器
+
 **通用**
 
 - 扫码登录，登录态本地保存，不落密码
@@ -74,6 +81,7 @@
 
 - **Node.js >= 18**（开发与验证环境为 Node 22）
 - 无需部署任何服务端，所有请求在本地发起
+- **Aria2 为可选项**：已开 JSON-RPC（默认 `http://localhost:6800/jsonrpc`）时并行下载更快；没装也能用内置下载器，`--engine auto` 会自动选
 
 ## 安装
 
@@ -163,6 +171,70 @@ node src/cli.mjs cloud match --sid <云盘songId> --asid <目标歌曲id> [--app
 node src/cli.mjs cloud report [--out 报告.md]             # 生成归属报告
 ```
 
+### 下载
+
+> 走第三方聚合站 `flac.music.hi.cn`，**与网易云登录态无关**，`login` 不是前置条件。
+> 站点只认 `Referer`，工具已内置；请求按 IP 限流，`--interval` 可调。
+
+```bash
+node src/cli.mjs dl find "Shape of My Heart" [--platform wyy|kuwo|both] [--limit 20]
+node src/cli.mjs dl albums "Backstreet Boys" [--all] [--min-tracks 2]
+
+node src/cli.mjs dl album "<专辑名>" --artist "<歌手>" \
+    [--id 专辑ID] [--platform wyy|kuwo] [--code 01] [--probe "专辑内任意一首歌名"] \
+    [--root 库根目录] [--dir 专辑目录] [--tracks 1,3-5] [--quality flac|mp3] \
+    [--engine auto|aria2|native] [--dry] [--force] [--verify] [--no-wait]
+
+node src/cli.mjs dl album --list albums.json [--only 01,02]     # 批量专辑模式
+
+node src/cli.mjs dl track "<曲名>" --artist "<歌手>" [--code OP01] [--credit 信用名] [--dry]
+
+node src/cli.mjs dl verify "<目录>"        # 校验时长/码率/FLAC 容器
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `--root` | 库根目录，实际落盘 `<root>/<歌手>/<NN - 专辑名>/` |
+| `--dir` | 直接指定专辑目录，不再拼歌手与编号 |
+| `--engine` | `auto`（默认）/ `aria2` / `native`。`auto` 探不到 RPC 就降级内置下载器 |
+| `--rpc` `--secret` | Aria2 RPC 地址与 `rpc-secret`，也可用 `ARIA2_RPC` / `ARIA2_SECRET` |
+| `--code` | 专辑序号前缀，`--code 01` → `01 - Backstreet Boys/` |
+| `--probe` | 用专辑内任意一首歌名辅助定位，**同名首专/同名精选必备** |
+| `--tracks` | 只处理指定轨号，支持 `1,3-5` |
+| `--verify` | 下载完立刻跑一遍校验 |
+| `--no-wait` | 只提交给 Aria2 就返回（Aria2 后台继续下） |
+| `--force` | 覆盖同轨号已存在的文件 |
+
+默认落盘根目录 `./downloads`，可用 `--root`、`CRATE_DL_ROOT` 或 `config/download.json` 覆盖：
+
+```json
+{ "root": "E:/Music/flac", "engine": "auto", "rpc": "http://localhost:6800/jsonrpc", "secret": "" }
+```
+
+批量模式的 `albums.json`（`code` 按发售顺序手工给定，`probe` 选填但同名专辑强烈建议填）。
+注意 `root` 填的是**歌手目录**，工具只在其下建 `NN - 专辑名/`：
+
+```json
+[
+  {
+    "artist": "Backstreet Boys",
+    "root": "E:/Music/flac/Backstreet Boys",
+    "albums": [
+      { "code": "01", "name": "Backstreet Boys", "probe": "Darlin'" },
+      { "code": "02", "name": "Backstreet's Back" },
+      { "code": "03", "name": "Millennium", "id": "1550459", "platform": "wyy" }
+    ]
+  }
+]
+```
+
+命名与选源规则（与油猴脚本一致）：
+
+- 专辑：`<两位轨号> - <曲名>.<ext>`；单曲：`<编号> - <曲名> - <歌手>.<ext>`，编号在下载时就带上，下完不用改名
+- Windows 非法字符 `\ / : * ? " < > |` → `_`；`*` `~` 直接去掉；结尾的点与空格去掉
+- 音质 `flac > 320k mp3 > 其余`；**同档优先网易云**（酷我常报 2000k，多为转码/升频）
+- 目录内已有同轨号文件会跳过，可反复跑到补齐；缺失曲目重跑同一条命令即可
+
 ## 典型场景
 
 ### 1. 把本地按目录整理的音乐上传并归档成歌单
@@ -216,6 +288,30 @@ node src/cli.mjs cloud report --out 云盘归属.md
 ```
 
 遍历全部歌单建立「曲目 → 歌单」索引，再与云盘逐条比对，输出 Markdown：已收藏 / 未收藏 / 被多个歌单收录三张表。
+
+### 6. 下载整张专辑（Aria2 可选）
+
+```bash
+# 先预演：确认选中哪张专辑、哪几首会被跳过
+node src/cli.mjs dl album "Backstreet Boys" --artist "Backstreet Boys" \
+    --code 01 --root "E:/Music/flac" --probe "Darlin'" --dry
+
+# 正式下载并校验
+node src/cli.mjs dl album "Backstreet Boys" --artist "Backstreet Boys" \
+    --code 01 --root "E:/Music/flac" --probe "Darlin'" --engine aria2 --verify
+```
+
+```
+E:\Music\flac\
+└── Backstreet Boys\
+    └── 01 - Backstreet Boys\
+        ├── 01 - We've Got It Goin' On (Radio Edit).flac
+        ├── 02 - Anywhere for You.flac
+        ├── ...
+        └── .crate-manifest.json      # 曲目清单，dl verify 用它比时长
+```
+
+没开 Aria2 时去掉 `--engine aria2` 即可，`auto` 会自动降级到内置下载器（并发 3，失败重试 3 次，先写 `.part` 再改名，不会留下半截文件）。
 
 ## 设计说明：实测踩到的六个坑
 
@@ -343,7 +439,7 @@ node src/cli.mjs cloud report --out 云盘归属.md
 
 ## 已知限制
 
-- **未实现**：歌单改名、批量评论/点赞、歌曲下载。
+- **未实现**：歌单改名、批量评论/点赞。下载走第三方站点的独立接口（见[下载](#下载)），不经过网易云，也不消耗登录态。
 - **匹配相关的问题**统一见 [匹配与元数据](#匹配与元数据三种状态)。最需要注意的两条：
   - **未匹配 ≠ 可修复**。原版下架后不存在合格候选，强行匹配会挂到翻唱或冒充账号名下。
   - **改匹配时歌单引用不会自动更新**（未匹配 → 已匹配 则会自动跟随），前者需要 `pl add` + `pl move` 手工补位。
