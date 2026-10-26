@@ -10,7 +10,7 @@ import {
   pickCandidates, getUrl, sanitizeFilename, artistMatches, setSiteInterval,
 } from '../lib/flac.mjs'
 import { createEngine, DEFAULT_RPC } from '../lib/engine.mjs'
-import { audioOffsetOf } from '../lib/tags.mjs'
+import { audioBytesOf } from '../lib/tags.mjs'
 import { autoTag, autoTagFile } from './tag.mjs'
 import { ROOT } from '../lib/api.mjs'
 import {
@@ -613,9 +613,9 @@ export async function cmdVerify(dir, flags = {}) {
 
     // 码率只对音频帧成立：写标签后文件含封面等元数据区，不能拿总字节反推
     let audioBytes = size
-    if (ext === '.flac') {
+    if (ext === '.flac' || ext === '.mp3') {
       try {
-        audioBytes = size - audioOffsetOf(file)
+        audioBytes = audioBytesOf(file)
       } catch {
         // 解析失败交给上面的容器检查报错
       }

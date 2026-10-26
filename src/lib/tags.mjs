@@ -1,8 +1,8 @@
-// FLAC 标签写入：直接改写元数据块，不重编码音频
+// 标签写入：FLAC 走 VORBIS_COMMENT/PICTURE，MP3 走 ID3v2.4
 //
-// 只依赖 Node 内置能力：FLAC 的元数据块格式简单（4 字节头 + 负载），
-// 自己解析/重组比引入 taglib 更可控，也能保证音频数据字节不动。
-// 写入前会保留 STREAMINFO/SEEKTABLE/CUESHEET 等其余块，只替换 VORBIS_COMMENT 与 PICTURE。
+// 只依赖 Node 内置能力：两种容器的标签区结构都简单，自己解析/重组比引入 taglib 更可控，
+// 也能保证音频数据字节不动。FLAC 保留 STREAMINFO/SEEKTABLE/CUESHEET 等其余块，
+// 只替换注释与封面；MP3 剥掉旧的 ID3v2/ID3v1 后重写。
 
 import fs from 'node:fs'
 
@@ -111,71 +111,171 @@ export function buildPicture(data) {
 }
 
 /**
- * 只读元数据块头，返回音频帧起始偏移。
- * 不把整文件读进内存——长曲动辄上百 MB，这里只需跳过块负载。
+ * 音频帧的字节数（不含标签区）。用于码率校验：
+ * 写标签后文件里多了注释与封面，拿总字节反推码率会误判。
+ * 只读文件头尾，不把整文件读进内存。
  */
-export function audioOffsetOf(file) {
+export function audioBytesOf(file) {
+  const size = fs.statSync(file).size
   const fd = fs.openSync(file, 'r')
   try {
-    const magic = Buffer.alloc(4)
-    fs.readSync(fd, magic, 0, 4, 0)
-    if (magic.toString('latin1') !== 'fLaC') throw new Error('不是 FLAC 文件')
-    let off = 4
-    for (;;) {
-      const head = Buffer.alloc(4)
-      fs.readSync(fd, head, 0, 4, off)
-      const h = head.readUInt32BE(0)
-      off += 4 + (h & 0xffffff)
-      if (h >= 0x80000000) return off
+    const head = Buffer.alloc(10)
+    const n = fs.readSync(fd, head, 0, 10, 0)
+
+    // FLAC：跳过全部元数据块
+    if (n >= 4 && head.toString('latin1', 0, 4) === 'fLaC') {
+      let off = 4
+      for (;;) {
+        const b = Buffer.alloc(4)
+        fs.readSync(fd, b, 0, 4, off)
+        const h = b.readUInt32BE(0)
+        off += 4 + (h & 0xffffff)
+        if (h >= 0x80000000) break
+      }
+      return size - off
     }
+
+    // MP3：扣掉头部 ID3v2 与尾部 ID3v1
+    if (n >= 10 && head.toString('latin1', 0, 3) === 'ID3') {
+      const tagSize = 10
+        + (((head[6] & 0x7f) << 21) | ((head[7] & 0x7f) << 14) | ((head[8] & 0x7f) << 7) | (head[9] & 0x7f))
+        + ((head[5] & 0x10) ? 10 : 0)
+      let tail = 0
+      if (size > 128) {
+        const t = Buffer.alloc(3)
+        fs.readSync(fd, t, 0, 3, size - 128)
+        if (t.toString('latin1') === 'TAG') tail = 128
+      }
+      return size - tagSize - tail
+    }
+
+    return size
   } finally {
     fs.closeSync(fd)
   }
 }
 
-/**
- * 写入标签。comments 为 {KEY: value}，picture 为封面图片的 Buffer（可空）。
- * 先写临时文件再原子替换，避免中断留下半截 FLAC。
- */
-export function writeTags(file, { comments, picture }) {
-  const buf = fs.readFileSync(file)
-  const { blocks, audioOffset } = readBlocks(buf)
+/** ID3 的 size 字段每字节只用低 7 位（syncsafe） */
+function syncsafe(n) {
+  return Buffer.from([(n >>> 21) & 0x7f, (n >>> 14) & 0x7f, (n >>> 7) & 0x7f, n & 0x7f])
+}
 
-  const streaminfo = blocks.find((b) => b.type === BLOCK.STREAMINFO)
-  if (!streaminfo) throw new Error('缺少 STREAMINFO 块')
-  // 保留其余块（应用块/定位表/提示表等），丢弃旧的注释与封面
-  const rest = blocks.filter((b) => b.type !== BLOCK.STREAMINFO && b.type !== BLOCK.VORBIS_COMMENT && b.type !== BLOCK.PICTURE)
+/** 已有 ID3v2 标签的总字节数（10 字节头 + 正文 + 可选 footer） */
+function id3Size(buf) {
+  const size = ((buf[6] & 0x7f) << 21) | ((buf[7] & 0x7f) << 14) | ((buf[8] & 0x7f) << 7) | (buf[9] & 0x7f)
+  return 10 + size + ((buf[5] & 0x10) ? 10 : 0)
+}
 
-  const out = [streaminfo, { type: BLOCK.VORBIS_COMMENT, data: buildComment(comments) }]
-  if (picture) out.push({ type: BLOCK.PICTURE, data: buildPicture(picture) })
-  out.push(...rest)
+function id3Frame(id, body) {
+  return Buffer.concat([Buffer.from(id, 'ascii'), syncsafe(body.length), Buffer.from([0, 0]), body])
+}
 
+function id3Text(id, value) {
+  return id3Frame(id, Buffer.concat([Buffer.from([0x03]), Buffer.from(String(value), 'utf8')]))
+}
+
+function id3Apic(data) {
+  const { mime } = detectImage(data)
+  const body = Buffer.concat([
+    Buffer.from([0x03]), // 编码：UTF-8
+    Buffer.from(mime, 'ascii'), Buffer.from([0]),
+    Buffer.from([3]), // 图片类型：封面正面
+    Buffer.alloc(0), Buffer.from([0]), // 空描述
+    data,
+  ])
+  return id3Frame('APIC', body)
+}
+
+/** ID3v2.4 标签块：文本帧 UTF-8，帧长度按 syncsafe 编码 */
+export function buildId3(comments, picture) {
+  const g = (k) => (comments[k] === undefined || comments[k] === null ? '' : String(comments[k]).trim())
+  const track = [g('TRACKNUMBER'), g('TRACKTOTAL')].filter(Boolean).join('/')
+  const disc = [g('DISCNUMBER'), g('DISCTOTAL')].filter(Boolean).join('/')
+  const map = [
+    ['TIT2', g('TITLE')],
+    ['TPE1', g('ARTIST')],
+    ['TALB', g('ALBUM')],
+    ['TPE2', g('ALBUMARTIST')],
+    ['TRCK', track],
+    ['TPOS', disc],
+    ['TDRC', g('DATE')],
+    ['TCON', g('GENRE')],
+    ['TCOM', g('COMPOSER')],
+  ]
+  const frames = map.filter(([, v]) => v).map(([id, v]) => id3Text(id, v))
+  if (picture) frames.push(id3Apic(picture))
+  const body = Buffer.concat(frames)
+  return Buffer.concat([Buffer.from('ID3', 'latin1'), Buffer.from([0x04, 0x00, 0x00]), syncsafe(body.length), body])
+}
+
+/** 去掉文件头已有的 ID3v2 与文件尾的 ID3v1，避免新旧两套标签并存 */
+function stripId3(buf) {
+  let start = 0
+  if (buf.length > 10 && buf.toString('latin1', 0, 3) === 'ID3') start = Math.min(id3Size(buf), buf.length)
+  let end = buf.length
+  if (end - start > 128 && buf.toString('latin1', end - 128, end - 125) === 'TAG') end -= 128
+  return buf.subarray(start, end)
+}
+
+/** 原子落盘：先写临时文件再改名；目标被占用（Windows EBUSY）时退回原地重写 */
+function writeAtomic(file, parts) {
   const tmp = `${file}.cratetag`
   const fd = fs.openSync(tmp, 'w')
   try {
-    fs.writeSync(fd, Buffer.from('fLaC', 'latin1'))
-    for (const [i, b] of out.entries()) {
-      const last = i === out.length - 1 ? 0x80000000 : 0
-      const head = Buffer.alloc(4)
-      head.writeUInt32BE(last + (b.type << 24) + b.data.length, 0)
-      fs.writeSync(fd, head)
-      fs.writeSync(fd, b.data)
-    }
-    for (let p = audioOffset; p < buf.length; p += COPY_CHUNK) {
-      const end = Math.min(p + COPY_CHUNK, buf.length)
-      fs.writeSync(fd, buf.subarray(p, end))
-    }
+    for (const p of parts) fs.writeSync(fd, p)
   } finally {
     fs.closeSync(fd)
   }
-
   try {
     fs.renameSync(tmp, file)
   } catch (err) {
-    // Windows 下目标被其他进程持有句柄时 rename 会 EBUSY/EPERM，但原地写入仍可用
     if (!['EBUSY', 'EPERM', 'EACCES'].includes(err.code)) throw err
     fs.writeFileSync(file, fs.readFileSync(tmp))
     fs.rmSync(tmp, { force: true })
   }
-  return { audioOffset, blocks: out.length }
+}
+
+/**
+ * 写入标签。comments 为 {KEY: value}，picture 为封面图片的 Buffer（可空）。
+ * FLAC 写 VORBIS_COMMENT + PICTURE；MP3 写 ID3v2.4（文本帧 + APIC）。
+ * 两条路径都只重组标签区，音频字节原样保留。
+ */
+export function writeTags(file, { comments, picture }) {
+  const buf = fs.readFileSync(file)
+  const magic = buf.toString('latin1', 0, 4)
+
+  if (magic === 'fLaC') {
+    const { blocks, audioOffset } = readBlocks(buf)
+
+    const streaminfo = blocks.find((b) => b.type === BLOCK.STREAMINFO)
+    if (!streaminfo) throw new Error('缺少 STREAMINFO 块')
+    // 保留其余块（应用块/定位表/提示表等），丢弃旧的注释与封面
+    const rest = blocks.filter((b) => b.type !== BLOCK.STREAMINFO && b.type !== BLOCK.VORBIS_COMMENT && b.type !== BLOCK.PICTURE)
+
+    const out = [streaminfo, { type: BLOCK.VORBIS_COMMENT, data: buildComment(comments) }]
+    if (picture) out.push({ type: BLOCK.PICTURE, data: buildPicture(picture) })
+    out.push(...rest)
+
+    const parts = [Buffer.from('fLaC', 'latin1')]
+    for (const [i, b] of out.entries()) {
+      const last = i === out.length - 1 ? 0x80000000 : 0
+      const head = Buffer.alloc(4)
+      head.writeUInt32BE(last + (b.type << 24) + b.data.length, 0)
+      parts.push(head, b.data)
+    }
+    // 音频帧按块写出，避免把上百 MB 的整段再复制一份
+    for (let p = audioOffset; p < buf.length; p += COPY_CHUNK) {
+      parts.push(buf.subarray(p, Math.min(p + COPY_CHUNK, buf.length)))
+    }
+
+    writeAtomic(file, parts)
+    return { container: 'flac', audioOffset, blocks: out.length }
+  }
+
+  if (magic.slice(0, 3) === 'ID3' || /\.mp3$/i.test(file)) {
+    writeAtomic(file, [buildId3(comments, picture), stripId3(buf)])
+    return { container: 'mp3' }
+  }
+
+  throw new Error(`不支持的容器：${file}（仅 FLAC / MP3）`)
 }
