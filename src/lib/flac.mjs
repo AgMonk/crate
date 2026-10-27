@@ -275,7 +275,17 @@ export async function getUrl(platform, song, quality, { tries = 5, onRetry } = {
     last = res.msg || `code=${res.code}`
     // 限流按提示秒数等；「Song not found」多为瞬时故障，退避重试通常能过
     const m = /(\d+)\s*秒后重试/.exec(last)
-    const wait = m ? (Number(m[1]) + 1.5) * 1000 : Math.min(2500 * attempt, 8000)
+    let wait
+    if (m) {
+      wait = (Number(m[1]) + 1.5) * 1000
+    } else if (/过于频繁|too frequent|请求过多/i.test(last)) {
+      wait = 20000
+    } else if (/Song not found or invalid response/.test(last)) {
+      // 站点把限流泛化成了这条提示：短退避只会继续打点、把窗口越撑越长
+      wait = Math.max(20000, siteInterval)
+    } else {
+      wait = Math.min(2500 * attempt, 8000)
+    }
     onRetry?.({ attempt, message: last, wait })
     if (attempt < tries) await sleep(wait)
   }

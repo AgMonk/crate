@@ -170,6 +170,8 @@ async function main() {
           return await pl.cmdDedupe(rest[0] || flags.pid, flags)
         case 'move':
           return await pl.cmdMove(rest[0] || flags.pid, flags)
+        case 'sort':
+          return await pl.cmdSort(flags)
         case 'audit':
           return await cloud.cmdAudit(flags)
         case 'merge':
@@ -180,7 +182,7 @@ async function main() {
         case 'create':
           return await pl.cmdCreate(flags, rest)
         default:
-          throw new Error(`未知歌单子命令: ${action}（可用: list/show/export/add/remove/dedupe/merge/create）`)
+          throw new Error(`未知歌单子命令: ${action}（可用: list/show/export/add/remove/dedupe/move/sort/audit/merge/create）`)
       }
     }
 

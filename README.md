@@ -17,7 +17,8 @@
 - [登录](#登录)
 - [命令参考](#命令参考)
 - [典型场景](#典型场景)
-- [设计说明：实测踩到的六个坑](#设计说明实测踩到的六个坑)
+- [命名与排序建议](#命名与排序建议)
+- [设计说明：实测踩到的七个坑](#设计说明实测踩到的七个坑)
 - [匹配与元数据：三种状态](#匹配与元数据三种状态)
 - [数据与安全](#数据与安全)
 - [已知限制](#已知限制)
@@ -144,6 +145,7 @@ node src/cli.mjs pl add <歌单> --tracks 1,2,3 [--file ids.txt] [--keep-order] 
 node src/cli.mjs pl remove <歌单> --tracks 1,2,3 [--apply]
 node src/cli.mjs pl dedupe <歌单> [--by id|meta] [--apply]
 node src/cli.mjs pl move <歌单> --id <歌曲id> --to <位置> [--apply]   # 单曲移到指定位置
+node src/cli.mjs pl sort [--prefix lib_] [--apply]                     # 调整侧边栏歌单顺序
 node src/cli.mjs pl audit                                 # 巡检各歌单中未匹配的云盘曲目
 node src/cli.mjs pl merge <源歌单...> --into <目标歌单|new:新名称> [--apply]
 node src/cli.mjs pl create <名称> [--apply]
@@ -268,7 +270,7 @@ node src/cli.mjs dl verify "<目录>"        # 校验时长/码率/FLAC 容器
 ### 1. 把本地按目录整理的音乐上传并归档成歌单
 
 ```
-D:\music\lib_JOJO\
+D:\music\JOJO\
 ├── 03\
 │   ├── ED01 - Walk Like an Egyptian - The Bangles.flac
 │   └── OP01 - STAND PROUD - 橋本仁.flac
@@ -277,22 +279,36 @@ D:\music\lib_JOJO\
 ```
 
 ```bash
-node src/cli.mjs cloud upload "D:/music/lib_JOJO" --recursive \
+node src/cli.mjs cloud upload "D:/music/JOJO" --recursive \
     --playlist "new:lib_JOJO" --repair --apply
 ```
 
 最终歌单顺序为 `03/` 全部曲目 → `04/` → `05/`，每层内按文件名自然序（`ED01` 先于 `ED02`，`9` 先于 `10`）。
 
-### 2. 校验云盘内容是否与本地一致
+### 2. 按目录顺序把云盘文件归档成 `lib_` 歌单（`data/mklib.mjs`）
+
+`data/mklib.mjs` 是本仓库的建单脚本：按目录里的文件顺序解析本地文件 → 反查云盘 `songId` → 写入 `lib_` 歌单。解析优先级为 **MD5 精确命中 → 文件名 → 标题 → 显式覆盖 → 歌单现有曲目兜底**。
 
 ```bash
-node src/cli.mjs cloud verify "D:/music/lib_JOJO"          # 只报告
-node src/cli.mjs cloud verify "D:/music/lib_JOJO" --apply  # 删除异常条目并重传
+node data/mklib.mjs --root="E:/Music/flac/XXX" --name="lib_XXX"            # 预演
+node data/mklib.mjs --root="E:/Music/flac/XXX" --name="lib_XXX" --apply     # 建单并写入
+node data/mklib.mjs --root="E:/Music/flac/XXX" --name="lib_XXX" --rebuild --apply
+```
+
+`--rebuild` 会先清空歌单再按目录顺序整体重建。**网易云自动匹配会改写云盘条目的 `songId`**（见坑 7），歌单里的旧引用会因此失效；重建可把引用对齐到云盘当前 id。若歌单出现「曲目莫名变少」，用 `--rebuild` 修复。
+
+> 最后一级「歌单现有曲目兜底」是为**云盘条目已被回收**的场景准备的：自动匹配完成后，网易云会清掉云盘里的原始条目（`user_cloud` 查不到），此时若只依赖云盘索引，`--rebuild` 会把这几首漏掉。兜底会按曲目标题去歌单现有条目里找唯一匹配，沿用它已有的稳定版权 id。
+
+### 3. 校验云盘内容是否与本地一致
+
+```bash
+node src/cli.mjs cloud verify "D:/music/JOJO"          # 只报告
+node src/cli.mjs cloud verify "D:/music/JOJO" --apply  # 删除异常条目并重传
 ```
 
 输出逐文件对比本地大小与云端大小，状态为 `完整` / `大小不符` / `内容不符` / `缺失`。
 
-### 3. 合并多个歌单
+### 4. 合并多个歌单
 
 ```bash
 node src/cli.mjs pl merge "曲库 - 日语混合" "曲库 - 英文混合" --into "new:综合曲库" --apply
@@ -300,7 +316,7 @@ node src/cli.mjs pl merge "曲库 - 日语混合" "曲库 - 英文混合" --into
 
 自动按曲目 ID 去重，只写入目标歌单中尚不存在的曲目。
 
-### 4. 清理云盘里没有归属的曲目
+### 5. 清理云盘里没有归属的曲目
 
 ```bash
 node src/cli.mjs cloud delete --not-in-playlist          # 预演，列出待删清单
@@ -309,7 +325,7 @@ node src/cli.mjs cloud delete --not-in-playlist --apply  # 执行
 
 删除前会把 `songId`、名称、歌手、专辑、大小、码率、**MD5**、原始文件名写入 `data/snapshot/del-cloud-<时间戳>.json`，便于日后定位与重新上传。
 
-### 5. 生成云盘归属报告
+### 6. 生成云盘归属报告
 
 ```bash
 node src/cli.mjs cloud report --out 云盘归属.md
@@ -317,7 +333,7 @@ node src/cli.mjs cloud report --out 云盘归属.md
 
 遍历全部歌单建立「曲目 → 歌单」索引，再与云盘逐条比对，输出 Markdown：已收藏 / 未收藏 / 被多个歌单收录三张表。
 
-### 6. 下载整张专辑（Aria2 可选）
+### 7. 下载整张专辑（Aria2 可选）
 
 ```bash
 # 先预演：确认选中哪张专辑、哪几首会被跳过
@@ -341,7 +357,92 @@ E:\Music\flac\
 
 没开 Aria2 时去掉 `--engine aria2` 即可，`auto` 会自动降级到内置下载器（并发 3，失败重试 3 次，先写 `.part` 再改名，不会留下半截文件）。
 
-## 设计说明：实测踩到的六个坑
+## 命名与排序建议
+
+`E:\Music\flac\` 是本地音乐库（`flac/`），`E:\Music\crate\` 是下载中转目录（`crate/`）。
+
+下面这套命名是本库**约定俗成的习惯，不是工具的强制约束**——`mklib.mjs` 只按目录顺序建单，不校验文件名；`dl` / `cloud upload` 也对命名无要求。命名只是为了让歌单顺序一眼可读、自己好找。
+
+### 目录与歌单
+
+- 建议**目录名不带 `lib_` 前缀**：`E:\Music\flac\数码宝贝\`
+- 建议**歌单名保留 `lib_` 前缀**：`lib_数码宝贝`——用于和自建歌单区分
+- 一部作品一个目录；同一系列的多季建议用子目录分隔（`JOJO/03|04|05`、`RWBY/01 - Vol.1 (2013)/`），每个子目录独立编号
+
+### 文件名
+
+```
+OP01 - My Soul, Your Beats! - Lia.flac
+ED01 - Brave Song - 多田葵.flac
+```
+
+动画主题歌建议用 `OPxx` / `EDxx` / `MOVxx` / `IMxx` + ` - ` + 曲名 + ` - ` + 歌手：
+
+| 前缀 | 含义 | 示例 |
+|---|---|---|
+| `OPxx` | 片头曲 | `OP01 - 緋色の空 - 川田まみ.flac` |
+| `EDxx` | 片尾曲 | `ED01 - 夜明け生まれ来る少女 - 高橋洋子.flac` |
+| `MOVxx` | 剧场版主题曲 | `MOV01 - 天壌を翔る者たち - Love Planet Five.flac` |
+| `IMxx` | 插入曲 | `IM01 - brave heart - 宮﨑歩.flac` |
+
+- 建议编号在同一作品内连续、跨季不重置（冰果 `OP01/OP02` 分属两季各一首）
+- 建议编号宽度固定两位（`OP01` 而非 `OP1`）
+- 建议**只给动画主题歌目录加前缀**。OST / BGM / 音乐专辑目录保持纯数字（`Fate/OST/.../40 - あなたがいた森 (TVサイズ).flac`）——它们的序号是专辑 track index，加前缀会破坏与 manifest 的对应
+
+### 歌单顺序
+
+歌单顺序 = 目录文件序 = 目录项按 `zh-CN` / `numeric` 排序后逐层展开。采用上面的前缀后，**类型前缀的字母序自然生效**：
+
+```
+ED01 … ED16  →  MOV01 … MOV06  →  OP01 … OP08
+```
+
+改过文件名后，重建歌单让顺序跟上：
+
+```bash
+node data/mklib.mjs --root="E:/Music/flac/银魂" --name="lib_银魂" --rebuild --apply
+```
+
+### 侧边栏歌单排序
+
+「我的歌单」列表（不是歌单内曲目顺序）也可以整理：
+
+```bash
+node src/cli.mjs pl sort                    # 预演
+node src/cli.mjs pl sort --apply            # 执行
+node src/cli.mjs pl sort --prefix "曲库_"   # 换前缀
+```
+
+默认把 `lib_` 开头的歌单排到最后，其余按名称升序（`zh-CN` 拼音序，同名按 id 兜底），组内同样升序。已收藏的歌单不受影响。
+
+两个服务端行为值得记一笔：
+
+- **`specialType=5` 的默认歌单**（「我喜欢的音乐」改名而来）会被服务端钉在第一位，不参与排序。脚本会把它单独摘出，比较时也剔除它
+- `/api/playlist/order/update` 的 `ids` 必须是 **JSON 数组字符串**（`"[1,2,3]"`）。传逗号分隔的 `"1,2,3"` 会返回 `code=400`；传对了会返回 200 但**必须回读校验**——参数拼错时同样可能静默返回 200 而不生效
+
+### 批量改名
+
+编号需要调整（跨季重排、目录迁移）时，用映射表批量改名，避免手工逐个改：
+
+```bash
+node data/rename-map.js --map=data/rename-map.json            # 预演
+node data/rename-map.js --map=data/rename-map.json --apply     # 执行
+```
+
+映射格式 `{ "目录绝对路径": { "旧文件名": "新文件名" } }`。工具做**两段式改名**（先加 `__tmp__` 前缀），所以 `OP01 ↔ ED01` 这类序号互换不会互相覆盖。
+
+> 改名后 `dl verify` 可能误报「时长差」：`.crate-manifest.json` 的 `tracks[].index` 与新序号不再一一对应。`src/cmd/download.mjs` 的 `expectedDuration()` 已改为**优先按曲名匹配**，匹配不到才回退到数字序号。
+
+### 校验
+
+```bash
+node data/diag-playlist.mjs --tasks=data/diag-tasks.json   # 歌单 vs 云盘 songId 一致性
+node data/check-order.mjs --tasks=data/order-tasks.json     # 歌单顺序 vs 目录文件序
+```
+
+`diag-tasks.json` / `order-tasks.json` 都是 `{ name, pid, root }` 清单。`check-order.mjs` 会把歌单曲目按标题映射回本地文件序号，检查映射是否单调递增——单调即说明歌单按目录序排列。
+
+## 设计说明：实测踩到的七个坑
 
 这些行为在文档里都查不到，只有跑真实账号才会暴露。记录下来，也解释了代码里那些看起来多余的判断。
 
@@ -385,6 +486,21 @@ E:\Music\flac\
 删掉的歌单仍可按 ID 查到详情（服务端缓存），而且 `trackCount` 可能与实际曲目数不一致。**判断歌单是否存在，必须以 `user_playlist` 列表为准**，否则会误判「某歌单仍存在」。
 
 此外，`playlist_tracks` 模块把响应包了两层（`{status, body:{status, body}}`），直接读 `body.code` 会拿到 `undefined`，导致**操作成功却报失败**。调用层需要逐层解包。
+
+### 7. 云盘条目自动匹配后 `songId` 会变，歌单里的旧引用会失效
+
+上传完成时，条目若是「未匹配」，`songId` 是云盘自身 id（形如 `3454xxxxxx`）；网易云后台完成自动匹配后，**同一条目的 `songId` 会变成版权曲目的 id**（`26118382` 这种小号）。两者指向同一个文件，但旧 id 会失效。
+
+后果：建单时写进歌单的那批云盘 id，在匹配完成后被服务端当成失效引用清理掉——歌单表现为「曲目莫名变少」，且全程不报错。实测 `lib_心理测量者` 6→1、`lib_夏目友人帐` 14→8、`lib_Angel Beats!` 2→0；而当时已经是 `matched` 的曲目（如 `abnormalize`）安然无恙。
+
+**处理**：
+
+- 歌单只引用**版权曲目 id**（`matched` 态）才稳定；`matched` 是终态，`unmatched` 可能随时被改写
+- 建单前确认条目已 matched；仍为 unmatched 的用 `cloud match --sid <云盘id> --asid <版权id> --apply` 主动锁定（候选按「歌手精确匹配 + 时长差 ≤3s」筛，见[推荐操作流程](#推荐操作流程)）
+- `data/mklib.mjs --rebuild` 会先清空歌单、再按目录顺序重建，把引用对齐到云盘当前 id
+- 完整顺序因此是 **上传 → 校验/修复 → 等匹配完成 → 建单**
+
+**匹配完成后云盘原始条目会被回收**：`user_cloud` 里再也查不到那条记录（`cloud list` 显示「没有符合条件的云盘歌曲」），但歌单里引用的版权 id 依然有效、照常播放。这带来一个副作用——**`--rebuild` 只靠云盘索引会漏掉这些曲目**（实测 6 个歌单里有 6 首如此）。所以 `mklib.mjs` 的解析链最后加了「歌单现有曲目兜底」：云盘查不到时按曲目标题去歌单里找唯一匹配，沿用其稳定版权 id。诊断脚本 `data/diag-playlist.mjs` 同样会把这类曲目标为「云盘条目已回收，歌单仍持有」，不再误报为缺曲。
 
 ## 匹配与元数据：三种状态
 

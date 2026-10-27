@@ -313,10 +313,10 @@ async function downloadAlbum({ artist, album, code = '', root, artistRoot = '', 
       failedTracks.push(p)
     }
   }
-  // 「Song not found」多为瞬时故障，跑完再补一轮通常就过
+  // 「Song not found」多为瞬时故障或站点限流，跑完再补一轮通常就过
   if (failedTracks.length) {
     info(`补一轮取链：${failedTracks.length} 首`)
-    await sleep(3000)
+    await sleep(15000)
     const retryList = failedTracks
     failedTracks = []
     for (const p of retryList) {
@@ -564,8 +564,21 @@ function magicOf(file, bytes = 4) {
 }
 
 function expectedDuration(manifest, base) {
+  if (!manifest?.tracks) return 0
+  // 文件名形如 "OP01 - 曲名 - 歌手.flac" / "ED02 - ...flac" / "01 - ..."：
+  // 数字序号会与 OP/ED 编号撞车（如 OP01 与 ED01 都是 1），所以优先用曲名匹配，
+  // 只有匹配不到时才回退到数字序号（旧的纯数字命名）。
+  const stem = base.replace(/\.(flac|mp3|wav|aiff?|m4a|ape|ogg|opus|wma)$/i, '')
+  const core = stem.replace(/^\s*(?:\d+|[A-Za-z]+\d+)\s*-\s*/, '').trim()
+  const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim()
+  const ct = norm(core)
+  const byName = manifest.tracks.find((x) => norm(x.name) === ct
+    || norm(core).startsWith(norm(x.name))
+    || norm(x.name).startsWith(norm(core)))
+  if (byName) return Number(byName.duration || 0)
+
   const m = /^(\d+)\s*-/.exec(base)
-  if (!m || !manifest?.tracks) return 0
+  if (!m) return 0
   const t = manifest.tracks.find((x) => Number(x.index) === Number(m[1]))
   return t ? Number(t.duration || 0) : 0
 }

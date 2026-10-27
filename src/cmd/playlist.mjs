@@ -130,6 +130,67 @@ export async function cmdList() {
   info(`共 ${all.length} 个歌单，其中我创建 ${all.filter((p) => p.own).length} 个`)
 }
 
+/**
+ * 调整「我的歌单」侧边栏顺序。
+ *
+ * 服务端接口 /api/playlist/order/update 接受**全量**歌单 id 顺序，
+ * 且 ids 必须是 JSON 数组字符串（逗号分隔会返回 code=400）。
+ *
+ * specialType=5 是网易云默认歌单（「我喜欢的音乐」改名而来），
+ * 服务端会把它固定在第一位，不参与排序——排序时需把它单独摘出比较。
+ */
+export async function cmdSort(flags) {
+  const all = await listPlaylists()
+  const own = all.filter((p) => p.own && !p.subscribed)
+  if (!own.length) return warn('没有可排序的自建歌单')
+
+  // 默认歌单被服务端钉在首位，不参与排序
+  const pinned = own.filter((p) => p.specialType === 5)
+  const sortable = own.filter((p) => p.specialType !== 5)
+
+  // 带前缀的排到最后，其余在前；组内按名称升序，同名按 id 兜底
+  const prefix = flags.prefix === undefined ? 'lib_' : String(flags.prefix)
+  const byName = (a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }) || a.id - b.id
+  const isPrefixed = (p) => prefix !== '' && p.name.startsWith(prefix)
+  const want = [
+    ...pinned,
+    ...sortable.filter((p) => !isPrefixed(p)).sort(byName),
+    ...sortable.filter((p) => isPrefixed(p)).sort(byName),
+  ]
+
+  const beforeIds = own.map((p) => p.id)
+  const afterIds = want.map((p) => p.id)
+  if (beforeIds.join(',') === afterIds.join(',')) {
+    ok(`歌单顺序已是目标顺序，无需调整（共 ${own.length} 个）`)
+    return
+  }
+
+  const beforeName = new Map(own.map((p) => [p.id, p.name]))
+  console.log(`${bold('歌单顺序')}  ${dim(`共 ${own.length} 个`)}`)
+  console.log(`${dim(prefix ? `前缀 "${prefix}" 的排最后，其余按名称升序` : '全部按名称升序')}\n`)
+  const rows = want.map((p, i) => {
+    const oldIdx = beforeIds.indexOf(p.id)
+    const moved = oldIdx !== i
+    return [i + 1, p.name, moved ? `${oldIdx + 1} → ${i + 1}` : '—', p.specialType === 5 ? '固定' : '']
+  })
+  console.log(table(['新序', '名称', '原位', '备注'], rows, { align: ['right', 'left', 'left', 'left'] }))
+
+  if (!flags.apply) return warn('预演模式，未调整。确认无误后追加 --apply')
+
+  const file = snapshot('sort-playlists', { before: beforeIds, after: afterIds, names: Object.fromEntries(own.map((p) => [p.id, p.name])) })
+  info(`快照: ${dim(file)}`)
+
+  must(await call('playlist_order_update', { ids: JSON.stringify(afterIds) }), '调整歌单顺序')
+
+  // 回读校验：服务端会把默认歌单提到首位，比较时需剔除它
+  await new Promise((r) => setTimeout(r, 800))
+  const after = (await listPlaylists()).filter((p) => p.own && !p.subscribed)
+  const actual = after.filter((p) => p.specialType !== 5).map((p) => p.id)
+  const expected = afterIds.filter((id) => !pinned.some((p) => p.id === id))
+  if (actual.join(',') === expected.join(',')) ok(`已调整（服务端确认 ${after.length} 个歌单）`)
+  else warn(`服务端顺序与预期不一致：实际前 3 个是 ${after.slice(0, 3).map((p) => p.name).join(' | ')}`)
+}
+
 export async function cmdShow(ref, flags) {
   const pl = await resolvePlaylist(ref)
   const tracks = await fetchTracks(pl.id)
